@@ -1,5 +1,6 @@
-# Zotero-RAGFlow 插件
-
+# Zotero-RAGFlow 插件 
+![](addon\content\icons\favicon.png)
+---
 Zotero-RAGFlow是一款将RAG（检索增强生成）技术集成到Zotero中的插件，让研究人员和学者能够基于自己的文献资料构建知识库并进行智能问答。通过该插件，用户可以直接将Zotero条目中的附件文档上传到RAGFlow服务，构建个性化知识库，并利用大语言模型对自己的文献进行提问和分析。
 
 ## 功能特点
@@ -68,119 +69,216 @@ Zotero-RAGFlow是一款将RAG（检索增强生成）技术集成到Zotero中的
 2. 浏览之前的问答记录
 3. 可以复制回答或再次提问相同问题
 
-## 系统架构图
+## 模块架构
+
+RAGFlow插件采用模块化设计，由三个核心模块组成，实现了系统的高内聚低耦合。
+
+### 主要模块
+
+```mermaid
+graph TD
+    Client[用户界面] --> |交互| UI[UI模块]
+    UI --> |调用| KBM[知识库管理模块]
+    UI --> |调用| SM[会话管理模块]
+    
+    KBM --> |同步| API[RAGFlow API]
+    SM --> |提问| API
+    
+    class UI,KBM,SM,API fill:#f9f9f9,stroke:#333,stroke-width:2px
+```
+
+### 1. 知识库管理模块
+
+知识库管理模块负责Zotero集合与RAGFlow知识库之间的同步、状态监控和错误处理。
+
+**核心功能**：
+- 知识库状态监控与管理
+- Zotero集合到知识库的同步
+- 增量更新与冲突处理
+- 任务队列与优先级管理
+- 错误恢复与容错机制
+
+[查看详细文档](src/modules.next/services/core/knowledge/README.md)
+
+### 2. 会话管理模块
+
+会话管理模块处理用户与AI助手之间的对话，管理会话状态和消息存储。
+
+**核心功能**：
+- 会话创建与管理
+- 知识库与助手的关联
+- 混合存储策略实现
+- 消息的发送与接收
+- 会话历史的持久化
+
+[查看详细文档](src/modules.next/services/core/session/README.md)
+
+### 3. UI模块
+
+UI模块负责用户界面元素的呈现和交互逻辑，与Zotero原生界面的集成。
+
+**核心功能**：
+- 菜单与对话框管理
+- 知识库选择与问答界面
+- 助手设置与参数配置
+- 事件驱动的UI更新
+- 错误提示与用户通知
+
+[查看详细文档](src/modules.next/ui/README.md)
+
+## 高级系统架构
 
 ### 整体架构
 
 ```mermaid
 graph TD
     User([用户]) <--> ZoteroUI[Zotero界面]
-    ZoteroUI <--> Addon[插件主模块]
-    Addon --> RFService[RAGFlowService]
-    Addon --> RFUI[RAGFlowUI]
-    Addon --> Logger[Logger]
-    Addon --> Storage[StorageManager]
-
-    RFService <--> |API请求|RAGFlow[RAGFlow服务]
-    Storage --> |存储|LocalFS[本地文件系统]
-
+    ZoteroUI <--> UI[UI模块]
+    UI <--> EventBus[事件总线]
+    
+    EventBus --> KBM[知识库管理模块]
+    EventBus --> SM[会话管理模块]
+    
+    KBM --> Watcher[状态监视器]
+    KBM --> Sync[同步管理器]
+    
+    SM --> Storage[混合存储系统]
+    SM --> Service[会话服务]
+    
+    Sync <--> |API请求|RAGFlow[RAGFlow服务]
+    Service <--> |API请求|RAGFlow
+    
+    Storage --> Prefs[Zotero Preferences]
+    Storage --> FileSystem[文件系统]
+    
     subgraph "Zotero插件"
-        Addon
-        RFService
-        RFUI
-        Logger
+        UI
+        EventBus
+        KBM
+        SM
+        Watcher
+        Sync
         Storage
+        Service
     end
+    
+    style EventBus fill:#f0f7ff,stroke:#3080ff,stroke-width:2px
+    style UI fill:#e6f7ff,stroke:#3080ff,stroke-width:2px
+    style KBM fill:#e6f7ff,stroke:#3080ff,stroke-width:2px
+    style SM fill:#e6f7ff,stroke:#3080ff,stroke-width:2px
 ```
 
-### 知识库创建流程
+### 知识库同步流程
+
+```mermaid
+sequenceDiagram
+    participant Z as Zotero
+    participant Watcher as 集合监视器
+    participant Sync as 同步管理器
+    participant Queue as 任务队列
+    participant RAG as RAGFlow API
+
+    Z->>Watcher: 文档变更事件
+    Watcher->>Watcher: 事件缓冲与批处理
+    Watcher->>Sync: 处理同步请求
+    Sync->>Queue: 创建同步任务
+    
+    alt 添加文档
+        Queue->>RAG: 上传文件
+    else 更新文档
+        Queue->>RAG: 更新文件内容
+    else 删除文档
+        Queue->>RAG: 删除知识库文档
+    end
+    
+    RAG-->>Queue: 处理结果
+    Queue-->>Sync: 任务完成状态
+    Sync-->>Watcher: 同步结果
+    Watcher->>Watcher: 更新本地状态
+```
+
+### 会话管理流程
 
 ```mermaid
 sequenceDiagram
     participant User as 用户
-    participant UI as RAGFlowUI
-    participant Addon as 插件核心
-    participant Service as RAGFlowService
-    participant RAGFlow as RAGFlow服务
+    participant UI as UI模块
+    participant Service as 会话服务
+    participant Storage as 混合存储
+    participant RAG as RAGFlow API
 
-    User->>UI: 选择集合并右键
-    User->>UI: 点击"发送到RAGFlow知识库"
-    UI->>Addon: 调用uploadCollectionToRAGFlow()
-    Addon->>Addon: 获取附件文件列表
-    Addon->>Service: uploadFiles(files, collectionName)
-    Service->>RAGFlow: 创建数据集
-    RAGFlow-->>Service: 返回数据集ID
-    Service->>RAGFlow: 上传文件
-    RAGFlow-->>Service: 上传结果
-    Service->>RAGFlow: 解析文档
-    RAGFlow-->>Service: 处理结果
-    Service-->>Addon: 返回知识库ID
-    Addon->>Addon: 保存知识库ID和名称
-    Addon->>UI: 显示进度和结果
-    UI-->>User: 显示完成通知
-```
-
-### 知识库问答流程
-
-```mermaid
-sequenceDiagram
-    participant User as 用户
-    participant UI as RAGFlowUI
-    participant Addon as 插件核心
-    participant Service as RAGFlowService
-    participant RAGFlow as RAGFlow服务
-    participant Storage as StorageManager
-
+    User->>UI: 选择知识库
     User->>UI: 输入问题
-    UI->>Addon: processQuestion(question)
-
-    alt 首次使用
-        Addon->>UI: 打开聊天助手设置
-        UI->>User: 显示设置界面
-        User->>UI: 配置模型参数
-        UI->>Addon: 返回配置参数
-        Addon->>Service: createChatAssistant()
-        Service->>RAGFlow: API请求创建聊天助手
-        RAGFlow-->>Service: 返回聊天助手ID
-        Addon->>Addon: 保存聊天助手映射
+    UI->>Service: sendMessage(sessionId, content)
+    
+    alt 初次使用
+        Service->>Service: 获取/创建助手
+        Service->>Service: 创建会话
     end
-
-    alt 没有活动会话
-        Addon->>Service: createSession()
-        Service->>RAGFlow: API请求创建会话
-        RAGFlow-->>Service: 返回会话ID
-        Addon->>Addon: 保存会话ID
-    end
-
-    Addon->>Service: askQuestion(question)
-    Service->>RAGFlow: API请求提问
-    RAGFlow->>RAGFlow: 检索相关文档并生成回答
-    RAGFlow-->>Service: 返回回答和来源
-    Service-->>Addon: 返回结果
-    Addon->>UI: 显示回答对话框
-    Addon->>Storage: 保存问答历史
-    UI-->>User: 展示回答和来源
+    
+    Service->>RAG: 发送问题
+    RAG-->>Service: 返回回答和来源
+    
+    Service->>Storage: 保存消息(元数据)
+    Service->>Storage: 保存消息(内容)
+    Storage->>Storage: 写入文件系统
+    
+    Service-->>UI: 返回助手回答
+    UI-->>User: 显示回答和来源
 ```
 
-### 历史记录管理流程
+## 开发者文档
 
-```mermaid
-flowchart TD
-    A[用户查看历史] --> B{StorageManager获取历史}
-    B -->|有历史记录| C[显示历史记录列表]
-    B -->|无历史记录| D[显示无记录提示]
+### 代码组织结构
 
-    C --> E[用户操作]
-    E --> F[复制回答]
-    E --> G[再次提问]
-    E --> H[管理历史]
-
-    H --> I{是否清除历史}
-    I -->|是| J[清除所有历史]
-    I -->|否| K[返回历史列表]
-
-    J --> L[显示清除成功]
 ```
+src/modules.next/
+├── services/                # 核心服务层
+│   ├── core/                # 核心功能模块
+│   │   ├── knowledge/       # 知识库管理模块
+│   │   └── session/         # 会话管理模块
+│   ├── logger.ts            # 日志服务
+│   └── ragflow.ts           # RAGFlow API服务
+├── ui/                      # 用户界面模块
+│   ├── assistantSettingsDialog.ts  # 助手设置对话框
+│   └── uiManager.ts         # UI管理器
+└── index.ts                 # 模块导出
+```
+
+### 核心设计模式
+
+RAGFlow插件实现了多种设计模式和架构策略：
+
+1. **单例模式**：核心服务如KnowledgeBaseManager和SessionService使用单例确保全局一致性
+2. **观察者模式**：基于事件总线实现组件间的松耦合通信
+3. **命令模式**：使用任务队列和异步执行器处理长时间运行的操作
+4. **策略模式**：实现不同类型文档的处理策略
+5. **适配器模式**：适配Zotero API和RAGFlow API的差异
+6. **工厂方法**：创建各种复杂对象的实例
+
+### 使用混合存储策略
+
+会话模块实现了创新的混合存储策略，解决了Zotero Preferences存储大型数据的限制：
+
+- **小体积元数据**：存储在Zotero Preferences
+- **大体积内容**：存储在文件系统
+- **多级容错**：内存缓存作为备份机制
+
+### 开发环境设置
+
+1. 克隆代码库：`git clone https://github.com/your-org/zotero-ragflow.git`
+2. 安装依赖：`npm install`
+3. 构建项目：`npm run build`
+4. 测试：`npm test`
+5. 打包：`npm run build:production`
+
+### API接口文档
+
+详细的API文档可在各模块的README文件中找到：
+
+- [知识库管理API](src/modules.next/services/core/knowledge/README.md#核心组件)
+- [会话管理API](src/modules.next/services/core/session/README.md#核心组件)
+- [UI组件API](src/modules.next/ui/README.md#核心组件)
 
 ## 技术细节
 
@@ -197,17 +295,19 @@ flowchart TD
 
 可用的大语言模型:
 
-- deepseek-resoner
 - deepseek-chat
 - qwen-turbo
 - qwen-max
 - qwen-plus
 - qwen-long
+- gpt-4o
+- gpt-3.5-turbo
 
 ### 存储管理
 
-- 聊天历史保存在Zotero数据目录的`ragflow-history`文件夹中
-- 知识库ID、聊天助手ID和会话ID保存在Zotero首选项中
+- 会话消息内容保存在Zotero数据目录的`ragflow/messages`文件夹中
+- 助手配置、会话元数据等保存在Zotero Preferences中
+- 知识库状态、同步配置和映射关系也保存在Zotero Preferences中
 
 ## 常见问题
 
@@ -223,12 +323,28 @@ flowchart TD
 4. **问: API余额不足怎么办?**  
    答: 登录RAGFlow平台充值或联系服务提供商。
 
+5. **问: 消息存储在哪里，如何备份？**  
+   答: 消息内容存储在Zotero数据目录的`ragflow/messages`文件夹中，备份Zotero数据目录即可保留会话历史。
+
+6. **问: 当同步过程中断后如何恢复？**  
+   答: 插件实现了自动恢复机制，您也可以右键点击集合选择"重新同步到RAGFlow"。
+
 ## 注意事项
 
 - 知识库构建需要时间，取决于文档数量和大小
 - 大型文档集合可能需要较高的处理资源
 - 请确保有足够的API余额用于处理请求
 - 处理敏感数据时请考虑数据隐私和安全性
+- 如遇到同步或问答问题，查看各模块的详细文档可能会有所帮助
+
+## 贡献指南
+
+欢迎对本项目做出贡献！如果您想要参与开发，请：
+
+1. 查看[完整的设计文档](#模块架构)
+2. 阅读特定模块的详细文档
+3. 遵循代码风格和测试规范
+4. 提交PR前请先解决所有lint和测试问题
 
 ## 许可信息
 

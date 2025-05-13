@@ -24,7 +24,6 @@ logs
 # Docs
 docs
 ZoteroAPI
-HTTP_API_RAGFlow.md 
 
 # vscode
 .vscode
@@ -37,3 +36,10 @@ coverage
 *.log
 *.tmp
 .cache
+
+# 冗余文件（next分支特有）
+src/modules/
+src/services/
+src/ui/
+# src/modules.next/refer_api/
+# src/modules.next/ui/pane/

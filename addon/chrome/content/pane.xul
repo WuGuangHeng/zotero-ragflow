@@ -1,0 +1,66 @@
+<?xml version="1.0"?>
+<?xml-stylesheet href="chrome://global/skin/" type="text/css"?>
+<?xml-stylesheet href="chrome://zotero/skin/zotero.css" type="text/css"?>
+<?xml-stylesheet href="chrome://zotero-platform/content/zotero.css" type="text/css"?>
+<?xml-stylesheet href="chrome://ragflow/content/styles/pane.css" type="text/css"?>
+
+<vbox 
+  id="ragflow-pane"
+  class="ragflow-pane"
+  flex="1"
+  xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul">
+  
+  <!-- 知识库状态区域 -->
+  <vbox id="kb-status" class="kb-status">
+  </vbox>
+
+  <!-- 主要内容区域 -->
+  <tabbox id="ragflow-main-tabs" flex="1">
+    <tabs>
+      <tab id="tab-sessions" label="会话"/>
+      <tab id="tab-chat" label="聊天"/>
+      <tab id="tab-settings" label="设置"/>
+    </tabs>
+    <tabpanels flex="1">
+      <!-- 会话列表面板 -->
+      <tabpanel id="panel-sessions" flex="1">
+        <vbox id="session-list" class="session-list" flex="1">
+        </vbox>
+      </tabpanel>
+
+      <!-- 聊天面板 -->
+      <tabpanel id="panel-chat" flex="1">
+        <vbox id="chat-view" class="chat-view" flex="1">
+        </vbox>
+      </tabpanel>
+
+      <!-- 设置面板 -->
+      <tabpanel id="panel-settings" flex="1">
+        <vbox id="settings-view" class="settings-view" flex="1">
+          <groupbox>
+            <caption label="知识库设置"/>
+            <grid>
+              <columns>
+                <column/>
+                <column flex="1"/>
+              </columns>
+              <rows>
+                <row align="center">
+                  <label value="API地址："/>
+                  <textbox id="ragflow-api-url" flex="1"/>
+                </row>
+                <row align="center">
+                  <label value="API密钥："/>
+                  <textbox id="ragflow-api-key" type="password" flex="1"/>
+                </row>
+              </rows>
+            </grid>
+            <hbox pack="end">
+              <button id="save-settings" label="保存"/>
+            </hbox>
+          </groupbox>
+        </vbox>
+      </tabpanel>
+    </tabpanels>
+  </tabbox>
+</vbox>

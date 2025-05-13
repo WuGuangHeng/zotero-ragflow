@@ -2,16 +2,35 @@ import { config } from "../package.json";
 import { ColumnOptions, DialogHelper } from "zotero-plugin-toolkit";
 import hooks from "./hooks";
 import { createZToolkit } from "./utils/ztoolkit";
-import { getString } from "./utils/locale";
-import { RAGFlowUI } from "./modules/ragflowUI";
-import { RAGFlowService } from "./modules/ragflowService";
-import { Logger } from "./modules/logger";
+
+// 导入新服务
+import {
+  Logger,
+  ragflow,
+  knowledgeBaseManager,
+  sessionService,
+  eventBus,
+  Events,
+} from "./services";
+
+// 导入UIManager和事件系统
+import { UIManager } from "./modules.next/ui/uiManager";
+
+// 导入KnowledgeBaseStatus常量
+import { KnowledgeBaseStatus } from "./modules.next/services/types/common";
+
+// 导入版本信息
+import { VERSION } from "./modules.next/version";
+
+// 导入SessionService以使用其静态方法
+import { SessionService } from "./modules.next/services/core/session/service";
+
+// 不再需要自定义事件类型，使用eventBus中定义的Events常量
 
 class Addon {
   public data: {
     alive: boolean;
     config: typeof config;
-    // Env type, see build.js
     env: "development" | "production";
     ztoolkit: ReturnType<typeof createZToolkit>;
     locale?: {
@@ -23,187 +42,494 @@ class Addon {
       rows: Array<{ [dataKey: string]: string }>;
     };
     dialog?: DialogHelper;
-    // 添加 RAGFlow 特定数据
-    kbId?: string | null;
   };
-  // Lifecycle hooks
+
+  // 生命周期钩子
   public hooks: typeof hooks;
-  // APIs
+
+  // 导出的API
   public api: object;
 
-  private chatAssistantId?: string;
-  private sessionId?: string;
+  // 当前活动知识库
+  private activeKnowledgeBaseId?: string;
+
+  // 事件监听器清理函数
+  private eventListeners: Array<() => void> = [];
 
   constructor() {
     this.data = {
       alive: true,
       config,
-      env: __env__,
+      env:
+        process.env.NODE_ENV === "development" ? "development" : "production",
       ztoolkit: createZToolkit(),
-      kbId: null,
     };
     this.hooks = hooks;
     this.api = {};
-  }
 
-  public async onStartup() {
-    // 注册 UI 组件
-    RAGFlowUI.registerUI();
-
-    // 加载之前保存的知识库 ID 和名称
-    this.data.kbId =
-      (Zotero.Prefs.get(`${config.prefsPrefix}.kbId`, true) as string) || null;
-    const kbName =
-      (Zotero.Prefs.get(`${config.prefsPrefix}.kbName`, true) as string) ||
-      "未命名知识库";
-
-    // 初始化 RAGFlow 服务配置
-    this.updateRAGFlowSettings();
-
-    // 添加调试信息
-    Logger.info(
-      `API Key状态: ${Zotero.Prefs.get(`${config.prefsPrefix}.apiKey`, true) ? "已设置" : "未设置"}`,
-    );
-    Logger.info(`使用配置前缀: ${config.prefsPrefix}`);
-    Logger.info(`知识库ID: ${this.data.kbId || "未设置"}`);
-    Logger.info(`知识库名称: ${kbName}`);
-    Logger.info("RAGFlow插件启动完成");
+    // 从首选项加载知识库ID
+    this.activeKnowledgeBaseId =
+      (Zotero.Prefs.get(`${config.prefsPrefix}.kbId`, true) as string) ||
+      undefined;
   }
 
   /**
-   * 更新 RAGFlow 服务配置
+   * 插件启动时执行
    */
-  public updateRAGFlowSettings() {
-    const apiKey = Zotero.Prefs.get(
-      `${config.prefsPrefix}.apiKey`,
-      true,
-    ) as string;
-    const apiUrl = Zotero.Prefs.get(
-      `${config.prefsPrefix}.apiUrl`,
-      true,
-    ) as string;
+  public async onStartup() {
+    try {
+      Logger.info({
+        message: "正在启动RAGFlow插件...",
+      });
 
-    if (apiKey) {
-      RAGFlowService.setApiKey(apiKey);
+      // 1. 加载配置
+      this.loadConfiguration();
+
+      // 2. 设置事件监听器
+      // 注意: UI管理器的初始化已移至hooks.ts中的onMainWindowLoad函数中处理
+      // 这样可以确保在窗口环境完全准备好后再初始化UI
+      this.setupEventListeners();
+
+      // 3. 加载上次使用的知识库(如果有)
+      if (this.activeKnowledgeBaseId) {
+        try {
+          await this.loadKnowledgeBase(this.activeKnowledgeBaseId);
+
+          Logger.info({
+            message: `已加载知识库: ${this.activeKnowledgeBaseId}`,
+          });
+        } catch (error) {
+          Logger.warn({
+            message: `无法加载之前的知识库: ${this.activeKnowledgeBaseId}`,
+          });
+          // 清除无效的知识库ID
+          this.activeKnowledgeBaseId = undefined;
+        }
+      }
+
+      Logger.info({
+        message: `RAGFlow插件 v${VERSION.toString()} 启动成功`,
+      });
+    } catch (error) {
+      Logger.error({
+        message: `RAGFlow插件启动失败: ${error instanceof Error ? error.message : String(error)}`,
+        error: error instanceof Error ? error : new Error(String(error)),
+      });
+      this.showErrorNotification("RAGFlow插件启动失败", error);
+    }
+  }
+
+  /**
+   * 插件卸载时执行
+   */
+  public async onUnload() {
+    try {
+      Logger.info({
+        message: "正在卸载RAGFlow插件...",
+      });
+
+      // 1. 移除所有事件监听器
+      this.eventListeners.forEach((removeListener) => removeListener());
+      this.eventListeners = [];
+
+      // 2. 释放知识库管理器资源
+      knowledgeBaseManager.dispose();
+
+      // 3. 释放会话服务资源
+      await sessionService.dispose();
+
+      // 4. 释放UI管理器资源
+      const uiManager = UIManager.getInstance();
+      uiManager.dispose();
+
+      Logger.info({
+        message: "RAGFlow插件卸载完成",
+      });
+    } catch (error) {
+      Logger.error({
+        message: `RAGFlow插件卸载过程中出错: ${error instanceof Error ? error.message : String(error)}`,
+        error: error instanceof Error ? error : new Error(String(error)),
+      });
+    }
+  }
+
+  /**
+   * 加载插件配置
+   */
+  private loadConfiguration() {
+    try {
+      // 获取API配置
+      const apiKey = Zotero.Prefs.get(
+        `${config.prefsPrefix}.apiKey`,
+        true,
+      ) as string;
+      const apiUrl =
+        (Zotero.Prefs.get(`${config.prefsPrefix}.apiUrl`, true) as string) ||
+        "http://127.0.0.1:8000";
+
+      // 配置服务
+      if (apiKey) {
+        ragflow.setApiKey(apiKey);
+        // 暂时跳过知识库管理器的配置，因为接口不匹配
+        // 实际实现应直接通过ragflow设置
+      } else {
+        Logger.warn({
+          message: "未配置RAGFlow API密钥",
+        });
+      }
+
+      if (apiUrl) {
+        ragflow.setBaseURL(apiUrl);
+        // 暂时跳过知识库管理器的配置，因为接口不匹配
+      }
+
+      // UI管理器的配置已移至hooks.ts中的onMainWindowLoad函数
+      // 这样可以确保window对象可用
+
+      Logger.info({
+        message: `配置加载完成，API URL: ${apiUrl}, API KEY: ${apiKey ? "已设置" : "未设置"}`,
+        data: { apiUrl, hasApiKey: !!apiKey },
+      });
+    } catch (error) {
+      Logger.error({
+        message: `加载配置失败: ${error instanceof Error ? error.message : String(error)}`,
+        error: error instanceof Error ? error : new Error(String(error)),
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * 设置事件监听器
+   */
+  private setupEventListeners() {
+    // 监听知识库状态变化
+    const kbStatusChangeHandler = (data: any) => {
+      const id = data.id;
+      const status = data.status;
+
+      Logger.info({
+        message: `知识库状态变化: ${id} => ${status}`,
+      });
+
+      if (id === this.activeKnowledgeBaseId) {
+        // 发送通知
+        this.showKnowledgeBaseStatusNotification(status);
+      }
+    };
+
+    // 添加自定义事件监听
+    eventBus.on("kb:status_changed", kbStatusChangeHandler);
+
+    this.eventListeners.push(() => {
+      eventBus.off("kb:status_changed", kbStatusChangeHandler);
+    });
+
+    // 监听会话创建事件
+    const sessionCreatedHandler = (data: any) => {
+      Logger.info({
+        message: `新会话已创建: ${data.id} (${data.name})`,
+      });
+    };
+
+    eventBus.on(Events.SESSION_CREATED, sessionCreatedHandler);
+
+    this.eventListeners.push(() => {
+      eventBus.off(Events.SESSION_CREATED, sessionCreatedHandler);
+    });
+  }
+
+  /**
+   * 加载知识库
+   * @param id 知识库ID
+   */
+  private async loadKnowledgeBase(id: string) {
+    try {
+      // 确保id是字符串类型
+      if (typeof id !== "string") {
+        Logger.error({
+          message: "无效的知识库ID格式",
+          data: { id, type: typeof id },
+        });
+        throw new Error(`无效的知识库ID格式: ${typeof id}`);
+      }
+
+      // 获取知识库状态
+      const status = await ragflow.getKnowledgeBaseStatus(id);
+      Logger.info({
+        message: `加载知识库 ${id}, 状态: ${status}`,
+        data: { datasetId: id, status },
+      });
+
+      // 触发状态变更事件
+      if (status) {
+        this.showKnowledgeBaseStatusNotification(status);
+      }
+    } catch (error) {
+      Logger.error({
+        message: `无法加载知识库 ${id}: ${error instanceof Error ? error.message : String(error)}`,
+        error: error instanceof Error ? error : new Error(String(error)),
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * 监控知识库状态
+   * @param id 知识库ID
+   */
+  private async monitorKnowledgeBase(id: string) {
+    try {
+      // 确保id是字符串类型
+      if (typeof id !== "string") {
+        Logger.error({
+          message: "无效的知识库ID格式",
+          data: { id, type: typeof id },
+        });
+        throw new Error(`无效的知识库ID格式: ${typeof id}`);
+      }
+
+      Logger.info({
+        message: `开始监控知识库: ${id}`,
+        data: { datasetId: id },
+      });
+
+      // 实现定期检查逻辑
+      let maxRetries = 30; // 最多重试30次
+      let retryCount = 0;
+      let interval = 5000; // 5秒一次
+
+      const checkStatus = async () => {
+        try {
+          const status = await ragflow.getKnowledgeBaseStatus(id);
+          Logger.info({
+            message: `知识库 ${id} 状态: ${status}`,
+            data: { datasetId: id, status },
+          });
+
+          // 触发状态变更事件
+          this.showKnowledgeBaseStatusNotification(status);
+
+          // 如果处理中，继续检查
+          if (status === "2" && retryCount < maxRetries) {
+            retryCount++;
+            setTimeout(checkStatus, interval);
+          }
+        } catch (error) {
+          Logger.error({
+            message: `检查知识库状态失败: ${error instanceof Error ? error.message : String(error)}`,
+            error: error instanceof Error ? error : new Error(String(error)),
+            data: { datasetId: id, retryCount },
+          });
+
+          if (retryCount < maxRetries) {
+            retryCount++;
+            setTimeout(checkStatus, interval);
+          }
+        }
+      };
+
+      // 开始首次检查
+      await checkStatus();
+    } catch (error) {
+      Logger.error({
+        message: `监控知识库失败: ${error instanceof Error ? error.message : String(error)}`,
+        error: error instanceof Error ? error : new Error(String(error)),
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * 显示知识库状态通知
+   */
+  private showKnowledgeBaseStatusNotification(status: string) {
+    let message = "";
+    let type: "success" | "default" | "error" | "warning" = "default";
+
+    // 根据状态设置消息和类型
+    if (status === "1") {
+      // Ready
+      message = "✅ 知识库已准备就绪，可以开始提问";
+      type = "success";
+    } else if (status === "2") {
+      // Processing
+      message = "📊 知识库正在构建中...";
+      type = "default";
+    } else if (status === "3") {
+      // Error
+      message = "❌ 知识库构建失败，请检查文件格式";
+      type = "error";
+    } else {
+      message = `⚠️ 知识库状态: ${status}`;
+      type = "warning";
     }
 
-    if (apiUrl) {
-      RAGFlowService.setBaseURL(apiUrl);
+    const progressWindow = new this.data.ztoolkit.ProgressWindow("RAGFlow");
+    progressWindow.createLine({
+      text: message,
+      type,
+    });
+    progressWindow.show();
+
+    // 如果是最终状态则设置自动关闭
+    if (status === "1" || status === "3") {
+      progressWindow.startCloseTimer(5000);
     }
+  }
+
+  /**
+   * 显示错误通知
+   */
+  private showErrorNotification(message: string, error?: unknown) {
+    const errorMessage =
+      error instanceof Error ? error.message : String(error || "");
+    const progressWindow = new this.data.ztoolkit.ProgressWindow(
+      "RAGFlow 错误",
+    );
+    progressWindow.createLine({
+      text: message,
+      type: "error",
+    });
+
+    if (errorMessage) {
+      progressWindow.createLine({
+        text: errorMessage,
+        type: "error",
+      });
+    }
+
+    progressWindow.show();
+    progressWindow.startCloseTimer(5000);
   }
 
   /**
    * 打开设置对话框
    */
   public openSettings() {
-    // 不需要调用 dialog.open()，因为 createSettingsUI 内部已经调用了
-    RAGFlowUI.createSettingsUI();
-  }
-
-  public async openCollectionSelector() {
-    // 首先检查是否配置了API密钥
-    const apiKey = Zotero.Prefs.get(
-      `${config.prefsPrefix}.apiKey`,
-      true,
-    ) as string;
-    if (!apiKey) {
-      // 修改: 使用正确的 ProgressWindow 创建方式
-      const progressWindow = new ztoolkit.ProgressWindow("RAGFlow 提示");
-      progressWindow.createLine({
-        text: "请先在设置中配置 RAGFlow API 密钥",
-      });
-      progressWindow.show();
-      progressWindow.startCloseTimer(3000);
-
-      // 打开设置页面
-      setTimeout(() => this.openSettings(), 1000);
-      return;
-    }
-
-    // 获取当前选中的集合
-    const collection = Zotero.getActiveZoteroPane().getSelectedCollection();
-    if (!collection) {
-      // 修改: 使用正确的 ProgressWindow 创建方式
-      const progressWindow = new ztoolkit.ProgressWindow("RAGFlow 错误");
-      progressWindow.createLine({ text: "请先选择一个集合" });
-      progressWindow.show();
-      progressWindow.startCloseTimer(3000);
-      return;
-    }
-
-    // 使用ztoolkit创建确认对话框，替换原生confirm()
-    const confirmDialog = new ztoolkit.Dialog(1, 1)
-      .addCell(0, 0, {
-        tag: "description",
-        properties: {
-          innerHTML: `是否将集合 "${collection.name}" 发送到 RAGFlow 构建知识库？`,
-        },
-      })
-      .addButton("确定", "ok")
-      .addButton("取消", "cancel")
-      .setDialogData({
-        // 使用正确的回调名称
-        unloadCallback: () => {
-          // 添加调试日志
-          const dialogData = confirmDialog.dialogData;
-          Zotero.debug(
-            "[RAGFlow] 对话框关闭，最后点击的按钮: " + dialogData._lastButtonId,
-          );
-
-          if (dialogData._lastButtonId === "ok") {
-            // 添加调试日志
-            Zotero.debug(
-              "[RAGFlow] 用户点击了确定按钮，准备上传集合: " + collection.name,
-            );
-            this.uploadCollectionToRAGFlow(collection);
-          } else {
-            // 添加调试日志
-            Zotero.debug("[RAGFlow] 用户取消了上传操作");
-          }
-        },
-      });
-
-    // 尝试添加额外调试信息
-    Zotero.debug("[RAGFlow] 准备打开确认对话框");
-    confirmDialog.open("RAGFlow 确认", {
-      centerscreen: true,
-      resizable: false,
-    });
-    Zotero.debug("[RAGFlow] 对话框已打开");
-  }
-
-  public async uploadCollectionToRAGFlow(collection: Zotero.Collection) {
     try {
-      Zotero.debug(
-        `[RAGFlow] 开始上传集合: ${collection.name}, ID: ${collection.id}`,
-      );
+      Logger.info({
+        message: "打开设置对话框",
+      });
+
+      // 使用eventBus发送事件
+      eventBus.emit(Events.UI_OPEN_SETTINGS, undefined);
+    } catch (error) {
+      Logger.error({
+        message: `打开设置对话框失败: ${error instanceof Error ? error.message : String(error)}`,
+        error: error instanceof Error ? error : new Error(String(error)),
+      });
+      this.showErrorNotification("打开设置对话框失败", error);
+    }
+  }
+
+  /**
+   * 打开集合选择器，用于创建知识库
+   */
+  public async openCollectionSelector() {
+    try {
+      // 首先检查是否配置了API密钥
+      const apiKey = Zotero.Prefs.get(
+        `${config.prefsPrefix}.apiKey`,
+        true,
+      ) as string;
+      if (!apiKey) {
+        const progressWindow = new this.data.ztoolkit.ProgressWindow(
+          "RAGFlow 提示",
+        );
+        progressWindow.createLine({
+          text: "请先在设置中配置 RAGFlow API 密钥",
+          type: "warning",
+        });
+        progressWindow.show();
+        progressWindow.startCloseTimer(3000);
+
+        // 打开设置页面
+        setTimeout(() => this.openSettings(), 1000);
+        return;
+      }
+
+      // 获取当前选中的集合
+      const collection = Zotero.getActiveZoteroPane().getSelectedCollection();
+      if (!collection) {
+        const progressWindow = new this.data.ztoolkit.ProgressWindow(
+          "RAGFlow 提示",
+        );
+        progressWindow.createLine({
+          text: "请先选择一个集合",
+          type: "warning",
+        });
+        progressWindow.show();
+        progressWindow.startCloseTimer(3000);
+        return;
+      }
+
+      // 使用ztoolkit创建确认对话框
+      const confirmDialog = new this.data.ztoolkit.Dialog(1, 1)
+        .addCell(0, 0, {
+          tag: "description",
+          properties: {
+            innerHTML: `是否将集合 "${collection.name}" 发送到 RAGFlow 构建知识库？`,
+          },
+        })
+        .addButton("确定", "ok")
+        .addButton("取消", "cancel")
+        .setDialogData({
+          unloadCallback: () => {
+            const dialogData = confirmDialog.dialogData;
+            Logger.debug({
+              message: `集合选择对话框关闭，最后点击按钮: ${dialogData._lastButtonId}`,
+            });
+
+            if (dialogData._lastButtonId === "ok") {
+              this.uploadCollectionToRAGFlow(collection);
+            }
+          },
+        });
+
+      confirmDialog.open("RAGFlow 确认", {
+        centerscreen: true,
+        resizable: false,
+      });
+    } catch (error) {
+      Logger.error({
+        message: `打开集合选择器失败: ${error instanceof Error ? error.message : String(error)}`,
+        error: error instanceof Error ? error : new Error(String(error)),
+      });
+      this.showErrorNotification("打开集合选择器失败", error);
+    }
+  }
+
+  /**
+   * 上传集合到RAGFlow
+   */
+  public async uploadCollectionToRAGFlow(collection: any) {
+    try {
+      Logger.info({
+        message: `开始上传集合: ${collection.name} (ID: ${collection.id})`,
+      });
 
       // 显示进度窗口
-      const progressWindow = new ztoolkit.ProgressWindow("RAGFlow 上传", {
-        closeOnClick: false,
-      });
+      const progressWindow = new this.data.ztoolkit.ProgressWindow(
+        "RAGFlow 上传",
+        {
+          closeOnClick: false,
+        },
+      );
       progressWindow.createLine({ text: "正在准备上传文件..." });
       progressWindow.show();
 
       // 获取集合中所有条目
       const items = collection.getChildItems();
-      Zotero.debug(`[RAGFlow] 集合中有 ${items.length} 个条目`);
 
       // 获取所有附件
       const attachments = [];
       for (const item of items) {
-        // Fix: getAttachments() cannot be called on attachment items
         if (item.isAttachment()) {
-          Zotero.debug(
-            `[RAGFlow] 条目 ${item.id} (${item.getField("title")}) 是附件，跳过`,
-          );
           continue;
         }
-        const itemAttachments = item.getAttachments();
-        Zotero.debug(
-          `[RAGFlow] 条目 ${item.id} (${item.getField("title")}) 有 ${itemAttachments.length} 个附件`,
-        );
 
+        const itemAttachments = item.getAttachments();
         for (const attachmentID of itemAttachments) {
           const attachment = Zotero.Items.get(attachmentID);
           if (attachment.isFileAttachment()) {
@@ -212,115 +538,76 @@ class Addon {
               const name = attachment.getField("title");
               const mimeType =
                 attachment.attachmentContentType || this.guessMimeType(path);
-
-              Zotero.debug(
-                `[RAGFlow] 添加附件: ${name}, 路径: ${path}, 类型: ${mimeType}`,
-              );
               attachments.push({ path, name, mimeType });
-            } else {
-              Zotero.debug(`[RAGFlow] 附件文件路径为空: ${attachment.id}`);
             }
-          } else {
-            Zotero.debug(`[RAGFlow] 附件不是文件附件: ${attachment.id}`);
           }
         }
       }
 
       if (attachments.length === 0) {
-        Zotero.debug(`[RAGFlow] 没有找到可上传的附件文件`);
-        progressWindow.createLine({ text: "没有找到可上传的附件文件" });
+        progressWindow.createLine({
+          text: "没有找到可上传的附件文件",
+          type: "error",
+        });
         progressWindow.startCloseTimer(3000);
         return;
       }
 
-      Zotero.debug(`[RAGFlow] 找到 ${attachments.length} 个附件文件`);
       progressWindow.createLine({
         text: `找到 ${attachments.length} 个附件文件`,
+        type: "default",
       });
 
       // 上传文件到 RAGFlow
       progressWindow.createLine({ text: "正在上传文件到 RAGFlow..." });
 
-      Zotero.debug(`[RAGFlow] 调用 RAGFlowService.uploadFiles...`);
-      // 使用集合名称而不是ID
-      const kbId = await RAGFlowService.uploadFiles(
-        attachments,
-        collection.name,
-      );
-      Zotero.debug(`[RAGFlow] 上传成功，知识库ID: ${kbId}`);
+      // 使用新服务上传文件
+      const result = await ragflow.uploadFiles(attachments, collection.name);
 
-      // 保存知识库 ID
-      this.data.kbId = kbId;
+      // 正确获取datasetId
+      const kbId = result.datasetId;
+
+      // 保存知识库 ID (确保是字符串)
+      this.activeKnowledgeBaseId = kbId;
       Zotero.Prefs.set(`${config.prefsPrefix}.kbId`, kbId, true);
+      Zotero.Prefs.set(`${config.prefsPrefix}.kbName`, collection.name, true);
 
-      progressWindow.createLine({ text: "上传成功，知识库构建中..." });
-
-      // 开始定期检查知识库状态
-      this.checkKnowledgeBaseStatus(kbId, progressWindow);
-    } catch (error: unknown) {
-      // 详细记录错误
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-      Zotero.debug(`[RAGFlow] 上传失败: ${errorMessage}`);
-      // if (error instanceof Error && error.stack) {
-      //   Zotero.debug(`[RAGFlow] 错误堆栈: ${error.stack}`);
-      // }
-      let userMessage = "上传失败";
-      // 为常见错误提供更友好的信息
-      if (
-        errorMessage.includes("不支持的HTML快照文件") ||
-        errorMessage.includes("This type of file has not been supported yet")
-      ) {
-        userMessage =
-          "上传失败: RAGFlow目前不支持HTML快照文件，请使用PDF或文本文件";
-      } else if (errorMessage.includes("没有找到RAGFlow支持的文件类型")) {
-        userMessage =
-          "上传失败: 没有找到RAGFlow支持的文件类型。目前支持PDF、TXT等文件，不支持HTML快照";
-      } else {
-        userMessage = `上传失败: ${errorMessage}`;
-      }
-      const progressWindow = new ztoolkit.ProgressWindow("RAGFlow 错误");
-      progressWindow.createLine({ text: `上传失败: ${errorMessage}` });
-      progressWindow.show();
-      progressWindow.startCloseTimer(3000);
-    }
-  }
-
-  /**
-   * 定期检查知识库状态
-   */
-  private async checkKnowledgeBaseStatus(kbId: string, progressWindow: any) {
-    try {
-      const status = await RAGFlowService.getKnowledgeBaseStatus(kbId);
-
-      if (status === "ready") {
-        progressWindow.createLine({
-          text: "✅ 知识库已准备就绪，可以开始提问",
+      // 添加同步配置 - 使知识库管理器能够监听集合变更并同步
+      try {
+        knowledgeBaseManager.addSyncConfig({
+          collectionId: collection.id.toString(),
+          datasetId: kbId,
+          autoSync: true,
         });
-        progressWindow.startCloseTimer(5000);
-      } else if (status === "processing") {
-        progressWindow.createLine({ text: "📊 知识库正在构建中..." });
-        // 10秒后再次检查
-        setTimeout(
-          () => this.checkKnowledgeBaseStatus(kbId, progressWindow),
-          10000,
-        );
-      } else if (status === "failed") {
-        progressWindow.createLine({
-          text: "❌ 知识库构建失败，请检查文件格式",
+
+        Logger.info({
+          message: `已为集合 ${collection.id} 添加同步配置，目标数据集: ${kbId}`,
+          data: { collectionId: collection.id.toString(), datasetId: kbId }, // 添加详细日志数据
         });
-        progressWindow.startCloseTimer(5000);
-      } else {
-        progressWindow.createLine({ text: `⚠️ 未知状态: ${status}` });
-        progressWindow.startCloseTimer(5000);
+      } catch (syncError) {
+        // 仅记录错误，不影响主流程
+        Logger.error({
+          message: `添加同步配置失败: ${syncError instanceof Error ? syncError.message : String(syncError)}`,
+          error:
+            syncError instanceof Error
+              ? syncError
+              : new Error(String(syncError)),
+        });
       }
-    } catch (error: unknown) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
+
       progressWindow.createLine({
-        text: `检查知识库状态失败: ${errorMessage}`,
+        text: "上传成功，知识库构建中...",
+        type: "success",
       });
-      progressWindow.startCloseTimer(3000);
+
+      // 开始监控知识库状态
+      await this.monitorKnowledgeBase(kbId);
+    } catch (error) {
+      Logger.error({
+        message: `上传集合失败: ${error instanceof Error ? error.message : String(error)}`,
+        error: error instanceof Error ? error : new Error(String(error)),
+      });
+      this.showErrorNotification("上传集合失败", error);
     }
   }
 
@@ -351,581 +638,12 @@ class Addon {
    * 打开知识库选择对话框
    */
   public async openKnowledgeBaseSelector() {
-    Logger.info("打开知识库选择对话框");
-
-    // 首先检查是否配置了API密钥
-    const apiKey = Zotero.Prefs.get(
-      `${config.prefsPrefix}.apiKey`,
-      true,
-    ) as string;
-    if (!apiKey) {
-      Logger.warn("未配置API密钥，提示用户配置");
-
-      const progressWindow = new this.data.ztoolkit.ProgressWindow(
-        "RAGFlow 提示",
-      );
-      progressWindow.createLine({
-        text: "请先在设置中配置 RAGFlow API 密钥",
-        type: "warning",
-      });
-      progressWindow.show();
-      progressWindow.startCloseTimer(3000);
-
-      // 打开设置页面
-      setTimeout(() => this.openSettings(), 1000);
-      return;
-    }
-
-    // 打开知识库选择器
-    RAGFlowUI.createKnowledgeBaseSelector();
-  }
-
-  /**
-   * 设置当前使用的知识库
-   * @param kbId 知识库ID
-   * @param kbName 知识库名称
-   */
-  public setKnowledgeBase(kbId: string, kbName: string) {
     try {
-      Logger.info(`设置当前知识库: ${kbId} (${kbName})`);
-
-      // 保存知识库ID
-      this.data.kbId = kbId;
-      Zotero.Prefs.set(`${config.prefsPrefix}.kbId`, kbId, true);
-
-      // 可选: 保存知识库名称，方便显示
-      Zotero.Prefs.set(`${config.prefsPrefix}.kbName`, kbName, true);
-
-      // 显示成功提示
-      const progressWindow = new this.data.ztoolkit.ProgressWindow("RAGFlow");
-      progressWindow.createLine({
-        text: `已切换到知识库: ${kbName}`,
-        type: "success",
-      });
-      progressWindow.show();
-      progressWindow.startCloseTimer(3000);
-    } catch (error) {
-      Logger.error("设置知识库失败", error);
-
-      const progressWindow = new this.data.ztoolkit.ProgressWindow(
-        "RAGFlow 错误",
-      );
-      progressWindow.createLine({
-        text: "设置知识库失败",
-        type: "error",
-      });
-      progressWindow.show();
-      progressWindow.startCloseTimer(3000);
-    }
-  }
-
-  public async openQuestionDialog() {
-    // 首先检查是否配置了API密钥
-    const apiKey = Zotero.Prefs.get(
-      `${config.prefsPrefix}.apiKey`,
-      true,
-    ) as string;
-    if (!apiKey) {
-      const progressWindow = new this.data.ztoolkit.ProgressWindow(
-        "RAGFlow 提示",
-      );
-      progressWindow.createLine({
-        text: "请先在设置中配置 RAGFlow API 密钥",
-      });
-      progressWindow.show();
-      progressWindow.startCloseTimer(3000);
-
-      // 打开设置页面
-      setTimeout(() => this.openSettings(), 1000);
-      return;
-    }
-
-    if (!this.data.kbId) {
-      const progressWindow = new this.data.ztoolkit.ProgressWindow(
-        "RAGFlow 错误",
-      );
-      progressWindow.createLine({
-        text: "尚未创建知识库，请先选择集合并上传到 RAGFlow",
-      });
-      progressWindow.show();
-      progressWindow.startCloseTimer(3000);
-      return;
-    }
-
-    // 直接调用 RAGFlowUI 中的方法，避免重复实现
-    RAGFlowUI.createQuestionInputDialog();
-  }
-
-  public async processQuestion(question: string) {
-    try {
-      Logger.info(`处理用户问题: ${question}`);
-
-      // 检查 kbId 是否存在
-      if (!this.data.kbId) {
-        Logger.warn("知识库ID不存在");
-        const progressWindow = new this.data.ztoolkit.ProgressWindow(
-          "RAGFlow 错误",
-        );
-        progressWindow.createLine({
-          text: "请先选择知识库",
-          type: "error",
-        });
-        progressWindow.show();
-        progressWindow.startCloseTimer(3000);
-
-        // 1秒后打开知识库选择器
-        setTimeout(() => this.openKnowledgeBaseSelector(), 1000);
-        return;
-      }
-
-      // 将 kbId 明确为 string 类型，解决后续所有类型问题
-      const kbId: string = this.data.kbId;
-
-      // 显示处理中提示
-      const progressWindow = new this.data.ztoolkit.ProgressWindow(
-        "RAGFlow 问答",
-      );
-      progressWindow.createLine({
-        text: "正在准备聊天助手...",
-        type: "default",
-      });
-      progressWindow.show();
-
-      // 先尝试从存储中获取聊天助手ID
-      let chatAssistantId = this.getChatAssistantId(kbId);
-
-      // 如果没有聊天助手ID，创建一个新的聊天助手
-      if (!chatAssistantId) {
-        progressWindow.createLine({
-          text: "正在创建聊天助手...",
-          type: "default",
-        });
-
-        // 获取知识库名称
-        const kbName =
-          (Zotero.Prefs.get(`${config.prefsPrefix}.kbName`, true) as string) ||
-          "Zotero知识库";
-
-        // 打开聊天助手参数设置对话框
-        RAGFlowUI.createChatAssistantSettingsDialog(kbId, async (params) => {
-          try {
-            // 创建聊天助手
-            const assistantName = this.generateAssistantName(kbName);
-            chatAssistantId = await RAGFlowService.createChatAssistant(
-              kbId,
-              assistantName,
-              params,
-            );
-
-            // 保存聊天助手与知识库的映射关系
-            this.saveChatAssistantMapping(kbId, chatAssistantId);
-
-            // 继续处理会话
-            this.continueQuestionProcessing(
-              chatAssistantId,
-              question,
-              progressWindow,
-            );
-          } catch (error) {
-            this.handleQuestionError(error, progressWindow);
-          }
-        });
-
-        return;
-      } else {
-        // 已有聊天助手，继续处理会话
-        this.continueQuestionProcessing(
-          chatAssistantId,
-          question,
-          progressWindow,
-        );
-      }
-    } catch (error) {
-      this.handleQuestionError(error);
-    }
-  }
-
-  /**
-   * 继续问题处理流程（处理会话部分）
-   */
-  private async continueQuestionProcessing(
-    chatAssistantId: string,
-    question: string,
-    progressWindow: any,
-  ) {
-    try {
-      // 获取当前活动会话ID
-      let sessionId = this.getActiveSessionId(chatAssistantId);
-
-      // 如果没有会话ID，创建一个新的会话
-      if (!sessionId) {
-        progressWindow.createLine({
-          text: "正在创建问答会话...",
-          type: "default",
-        });
-
-        const sessionName = `Zotero问答-${new Date().toISOString().slice(0, 10)}`;
-        Logger.info(`创建会话: ${sessionName}, 聊天助手ID: ${chatAssistantId}`);
-
-        sessionId = await RAGFlowService.createSession(
-          chatAssistantId,
-          sessionName,
-        );
-        Logger.info(`会话创建成功，ID: ${sessionId}`);
-
-        // 保存会话信息
-        this.saveSessionInfo(chatAssistantId, sessionId, sessionName);
-      }
-
-      // 使用聊天助手和会话发送问题
-      progressWindow.createLine({
-        text: "正在获取回答...",
-        type: "default",
+      Logger.info({
+        message: "打开知识库选择对话框",
       });
 
-      Logger.info(
-        `向聊天助手 ${chatAssistantId} 的会话 ${sessionId} 发送问题: ${question}`,
-      );
-
-      // 调用askQuestion方法，传入正确的参数
-      const result = await RAGFlowService.askQuestion(
-        chatAssistantId,
-        sessionId,
-        question,
-      );
-      Logger.info("成功获取回答");
-
-      // 关闭进度窗口
-      progressWindow.close();
-
-      // 显示回答窗口
-      RAGFlowUI.createQuestionDialog(question, result.answer, result.sources);
-    } catch (error) {
-      this.handleQuestionError(error, progressWindow);
-    }
-  }
-
-  /**
-   * 处理问答过程中的错误
-   */
-  private handleQuestionError(error: unknown, progressWindow?: any) {
-    Logger.error("处理问题失败", error);
-
-    const errorMessage = error instanceof Error ? error.message : String(error);
-
-    // 关闭现有进度窗口
-    if (progressWindow) {
-      progressWindow.close();
-    }
-
-    // 创建错误提示窗口
-    const errorWindow = new this.data.ztoolkit.ProgressWindow("RAGFlow 错误");
-
-    // 处理特定错误类型
-    if (
-      errorMessage.includes("聊天助手") ||
-      errorMessage.includes("chat assistant")
-    ) {
-      // 聊天助手相关错误，尝试重置聊天助手ID
-      errorWindow.createLine({
-        text: `聊天助手错误，请重试: ${errorMessage}`,
-        type: "error",
-      });
-    } else if (
-      errorMessage.includes("会话") ||
-      errorMessage.includes("session")
-    ) {
-      // 会话相关错误，尝试重置会话ID
-      errorWindow.createLine({
-        text: `会话错误，请重试: ${errorMessage}`,
-        type: "error",
-      });
-    } else if (
-      errorMessage.includes("余额不足") ||
-      errorMessage.includes("Insufficient Balance")
-    ) {
-      // API余额不足错误
-      errorWindow.createLine({
-        text: "RAGFlow API账户余额不足，请充值后再试",
-        type: "error",
-      });
-    } else {
-      // 其他一般错误
-      errorWindow.createLine({
-        text: `获取回答失败: ${errorMessage}`,
-        type: "error",
-      });
-    }
-
-    errorWindow.show();
-    errorWindow.startCloseTimer(5000);
-  }
-
-  // 会话管理
-  /**
-   * 保存知识库与聊天助手的关联关系
-   */
-  private saveChatAssistantMapping(
-    datasetId: string,
-    assistantId: string,
-  ): void {
-    try {
-      // 先获取现有映射
-      const mappingStr =
-        (Zotero.Prefs.get(
-          `${config.prefsPrefix}.chatAssistantMapping`,
-          true,
-        ) as string) || "{}";
-      const mapping = JSON.parse(mappingStr);
-
-      // 添加/更新映射
-      mapping[datasetId] = assistantId;
-
-      // 保存回首选项
-      Zotero.Prefs.set(
-        `${config.prefsPrefix}.chatAssistantMapping`,
-        JSON.stringify(mapping),
-        true,
-      );
-      Logger.info(
-        `已保存知识库(${datasetId})与聊天助手(${assistantId})的关联关系`,
-      );
-    } catch (error) {
-      Logger.error("保存聊天助手映射失败", error);
-    }
-  }
-
-  /**
-   * 获取知识库关联的聊天助手ID
-   */
-  private getChatAssistantId(datasetId: string): string | null {
-    try {
-      const mappingStr =
-        (Zotero.Prefs.get(
-          `${config.prefsPrefix}.chatAssistantMapping`,
-          true,
-        ) as string) || "{}";
-      const mapping = JSON.parse(mappingStr);
-      return mapping[datasetId] || null;
-    } catch (error) {
-      Logger.error("获取聊天助手ID失败", error);
-      return null;
-    }
-  }
-
-  /**
-   * 保存会话信息
-   */
-  private saveSessionInfo(
-    chatAssistantId: string,
-    sessionId: string,
-    sessionName: string,
-  ): void {
-    try {
-      // 获取现有会话列表
-      const sessionsStr =
-        (Zotero.Prefs.get(
-          `${config.prefsPrefix}.sessions.${chatAssistantId}`,
-          true,
-        ) as string) || "[]";
-      const sessions = JSON.parse(sessionsStr);
-
-      // 检查会话是否已存在
-      const existingIndex = sessions.findIndex(
-        (s: { id: string }) => s.id === sessionId,
-      );
-      if (existingIndex >= 0) {
-        // 更新已有会话
-        sessions[existingIndex] = {
-          id: sessionId,
-          name: sessionName,
-          lastUsed: Date.now(),
-        };
-      } else {
-        // 添加新会话
-        sessions.push({
-          id: sessionId,
-          name: sessionName,
-          lastUsed: Date.now(),
-        });
-      }
-
-      // 保存回首选项
-      Zotero.Prefs.set(
-        `${config.prefsPrefix}.sessions.${chatAssistantId}`,
-        JSON.stringify(sessions),
-        true,
-      );
-
-      // 同时更新当前活动会话
-      Zotero.Prefs.set(
-        `${config.prefsPrefix}.activeSession.${chatAssistantId}`,
-        sessionId,
-        true,
-      );
-
-      Logger.info(
-        `已保存会话信息: 助手ID=${chatAssistantId}, 会话ID=${sessionId}, 名称=${sessionName}`,
-      );
-    } catch (error) {
-      Logger.error("保存会话信息失败", error);
-    }
-  }
-
-  /**
-   * 获取聊天助手的会话列表
-   */
-  private getSessionList(
-    chatAssistantId: string,
-  ): Array<{ id: string; name: string; lastUsed: number }> {
-    try {
-      const sessionsStr =
-        (Zotero.Prefs.get(
-          `${config.prefsPrefix}.sessions.${chatAssistantId}`,
-          true,
-        ) as string) || "[]";
-      return JSON.parse(sessionsStr);
-    } catch (error) {
-      Logger.error("获取会话列表失败", error);
-      return [];
-    }
-  }
-
-  /**
-   * 获取当前活动会话ID
-   */
-  private getActiveSessionId(chatAssistantId: string): string | null {
-    return (
-      (Zotero.Prefs.get(
-        `${config.prefsPrefix}.activeSession.${chatAssistantId}`,
-        true,
-      ) as string) || null
-    );
-  }
-
-  /**
-   * 打开聊天助手设置对话框，用于更新现有聊天助手
-   */
-  public async openChatAssistantSettings() {
-    try {
-      // 检查是否有知识库ID
-      if (!this.data.kbId) {
-        const progressWindow = new this.data.ztoolkit.ProgressWindow(
-          "RAGFlow 错误",
-        );
-        progressWindow.createLine({
-          text: "请先选择知识库",
-          type: "error",
-        });
-        progressWindow.show();
-        progressWindow.startCloseTimer(3000);
-        return;
-      }
-
-      // 获取聊天助手ID
-      const chatAssistantId = this.getChatAssistantId(this.data.kbId);
-      if (!chatAssistantId) {
-        const progressWindow = new this.data.ztoolkit.ProgressWindow(
-          "RAGFlow 错误",
-        );
-        progressWindow.createLine({
-          text: "当前知识库没有关联的聊天助手，请先提问以创建聊天助手",
-          type: "error",
-        });
-        progressWindow.show();
-        progressWindow.startCloseTimer(3000);
-        return;
-      }
-
-      // 显示处理中提示
-      const progressWindow = new this.data.ztoolkit.ProgressWindow("RAGFlow");
-      progressWindow.createLine({
-        text: "正在加载聊天助手设置...",
-        type: "default",
-      });
-      progressWindow.show();
-
-      // 获取知识库名称
-      const kbName =
-        (Zotero.Prefs.get(`${config.prefsPrefix}.kbName`, true) as string) ||
-        "Zotero知识库";
-      const assistantName = this.generateAssistantName(kbName);
-
-      // 打开设置对话框，提供当前聊天助手ID供更新使用
-      RAGFlowUI.createChatAssistantSettingsDialog(
-        this.data.kbId,
-        async (params) => {
-          try {
-            // 更新聊天助手
-            await RAGFlowService.updateChatAssistant(
-              chatAssistantId,
-              assistantName,
-              params,
-            );
-
-            // 关闭进度窗口
-            progressWindow.close();
-
-            // 显示成功消息
-            const successWindow = new this.data.ztoolkit.ProgressWindow(
-              "RAGFlow",
-            );
-            successWindow.createLine({
-              text: "聊天助手设置已更新",
-              type: "success",
-            });
-            successWindow.show();
-            successWindow.startCloseTimer(3000);
-          } catch (error) {
-            progressWindow.close();
-
-            const errorMessage =
-              error instanceof Error ? error.message : String(error);
-            const errorWindow = new this.data.ztoolkit.ProgressWindow(
-              "RAGFlow 错误",
-            );
-            errorWindow.createLine({
-              text: `更新聊天助手失败: ${errorMessage}`,
-              type: "error",
-            });
-            errorWindow.show();
-            errorWindow.startCloseTimer(3000);
-          }
-        },
-        chatAssistantId,
-      ); // 传入现有chatAssistantId表示这是更新操作
-    } catch (error) {
-      Logger.error("打开聊天助手设置失败", error);
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-
-      const errorWindow = new this.data.ztoolkit.ProgressWindow("RAGFlow 错误");
-      errorWindow.createLine({
-        text: `打开聊天助手设置失败: ${errorMessage}`,
-        type: "error",
-      });
-      errorWindow.show();
-      errorWindow.startCloseTimer(3000);
-    }
-  }
-
-  /**
-   * 生成统一格式的聊天助手名称
-   * @param kbName 知识库名称
-   * @returns 格式化的聊天助手名称
-   */
-  private generateAssistantName(kbName: string): string {
-    return `Zotero-${kbName}-${new Date().toISOString().slice(0, 10)}`;
-  }
-
-  /**
-   * 打开历史记录对话框
-   */
-  public async openHistoryDialog() {
-    try {
-      Logger.info("打开历史记录对话框");
-
-      // 首先检查是否配置了API密钥 - 虽然不一定需要API密钥来查看历史记录，但保持一致性检查
+      // 首先检查是否配置了API密钥
       const apiKey = Zotero.Prefs.get(
         `${config.prefsPrefix}.apiKey`,
         true,
@@ -946,20 +664,484 @@ class Addon {
         return;
       }
 
-      // 调用 RAGFlowUI 中的 createHistoryDialog 方法
-      await RAGFlowUI.createHistoryDialog();
-    } catch (error) {
-      Logger.error("打开历史记录对话框失败", error);
-
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-      const errorWindow = new this.data.ztoolkit.ProgressWindow("RAGFlow 错误");
-      errorWindow.createLine({
-        text: `打开历史记录失败: ${errorMessage}`,
-        type: "error",
+      // 使用eventBus发送事件
+      eventBus.emit(Events.UI_SHOW_KB_SELECTOR, {
+        id: this.activeKnowledgeBaseId,
       });
-      errorWindow.show();
-      errorWindow.startCloseTimer(3000);
+    } catch (error) {
+      Logger.error({
+        message: `打开知识库选择对话框失败: ${error instanceof Error ? error.message : String(error)}`,
+        error: error instanceof Error ? error : new Error(String(error)),
+      });
+      this.showErrorNotification("打开知识库选择对话框失败", error);
+    }
+  }
+
+  /**
+   * 设置当前使用的知识库
+   */
+  public setKnowledgeBase(kbId: string, kbName: string) {
+    try {
+      Logger.info({
+        message: `设置当前知识库: ${kbId} (${kbName})`,
+      });
+
+      // 保存知识库ID
+      this.activeKnowledgeBaseId = kbId;
+      Zotero.Prefs.set(`${config.prefsPrefix}.kbId`, kbId, true);
+      Zotero.Prefs.set(`${config.prefsPrefix}.kbName`, kbName, true);
+
+      // 加载知识库
+      this.loadKnowledgeBase(kbId);
+
+      // 显示成功提示
+      const progressWindow = new this.data.ztoolkit.ProgressWindow("RAGFlow");
+      progressWindow.createLine({
+        text: `已切换到知识库: ${kbName}`,
+        type: "success",
+      });
+      progressWindow.show();
+      progressWindow.startCloseTimer(3000);
+    } catch (error) {
+      Logger.error({
+        message: `设置知识库失败: ${error instanceof Error ? error.message : String(error)}`,
+        error: error instanceof Error ? error : new Error(String(error)),
+      });
+      this.showErrorNotification("设置知识库失败", error);
+    }
+  }
+
+  /**
+   * 打开问题对话框
+   */
+  public openQuestionDialog() {
+    try {
+      Logger.info({
+        message: "打开问题对话框",
+      });
+
+      // 首先检查是否配置了API密钥
+      const apiKey = Zotero.Prefs.get(
+        `${config.prefsPrefix}.apiKey`,
+        true,
+      ) as string;
+      if (!apiKey) {
+        const progressWindow = new this.data.ztoolkit.ProgressWindow(
+          "RAGFlow 提示",
+        );
+        progressWindow.createLine({
+          text: "请先在设置中配置 RAGFlow API 密钥",
+          type: "warning",
+        });
+        progressWindow.show();
+        progressWindow.startCloseTimer(3000);
+
+        // 打开设置页面
+        setTimeout(() => this.openSettings(), 1000);
+        return;
+      }
+
+      if (!this.activeKnowledgeBaseId) {
+        const progressWindow = new this.data.ztoolkit.ProgressWindow(
+          "RAGFlow 提示",
+        );
+        progressWindow.createLine({
+          text: "尚未选择知识库，请先选择或创建知识库",
+          type: "warning",
+        });
+        progressWindow.show();
+        progressWindow.startCloseTimer(3000);
+        return;
+      }
+
+      // 使用eventBus发送事件
+      eventBus.emit(Events.UI_SHOW_QUESTION, {
+        id: this.activeKnowledgeBaseId,
+      });
+    } catch (error) {
+      Logger.error({
+        message: `打开问题对话框失败: ${error instanceof Error ? error.message : String(error)}`,
+        error: error instanceof Error ? error : new Error(String(error)),
+      });
+      this.showErrorNotification("打开问题对话框失败", error);
+    }
+  }
+
+  /**
+   * 处理用户问题
+   */
+  public async processQuestion(question: string) {
+    try {
+      Logger.info({
+        message: `处理用户问题: ${question}`,
+      });
+
+      // 检查知识库ID是否存在
+      if (!this.activeKnowledgeBaseId) {
+        const progressWindow = new this.data.ztoolkit.ProgressWindow(
+          "RAGFlow 提示",
+        );
+        progressWindow.createLine({
+          text: "请先选择知识库",
+          type: "warning",
+        });
+        progressWindow.show();
+        progressWindow.startCloseTimer(3000);
+
+        // 打开知识库选择器
+        setTimeout(() => this.openKnowledgeBaseSelector(), 1000);
+        return;
+      }
+
+      // 显示处理中提示
+      const progressWindow = new this.data.ztoolkit.ProgressWindow(
+        "RAGFlow 问答",
+        {
+          closeOnClick: false,
+        },
+      );
+      progressWindow.createLine({
+        text: "正在处理问题...",
+        type: "default",
+      });
+      progressWindow.show();
+
+      // 获取知识库名称
+      const kbName =
+        (Zotero.Prefs.get(`${config.prefsPrefix}.kbName`, true) as string) ||
+        "未命名知识库";
+
+      try {
+        // 使用sessionService获取或创建会话 - 重用现有会话
+        const session = await sessionService.getOrCreateSessionForKnowledgeBase(
+          this.activeKnowledgeBaseId,
+          kbName,
+        );
+
+        Logger.info({
+          message: `使用会话: ${session.id}`,
+          data: { assistantId: session.assistantId, name: session.name },
+        });
+
+        // 发送消息并获取回复
+        progressWindow.createLine({
+          text: "正在获取回答...",
+          type: "default",
+        });
+
+        const response = await sessionService.sendMessage(session.id, question);
+
+        // 关闭进度窗口
+        progressWindow.close();
+
+        // 使用eventBus发送事件
+        eventBus.emit(Events.UI_SHOW_CHAT_RESULT, {
+          question,
+          answer: response.content,
+          sources: response.sources || [],
+        });
+      } catch (error) {
+        // 如果sessionService不可用或发生错误，回退到旧的方法
+        Logger.warn({
+          message: `使用sessionService处理问题失败，回退到旧方法: ${error instanceof Error ? error.message : String(error)}`,
+          error: error instanceof Error ? error : new Error(String(error)),
+        });
+
+        // 尝试检查错误类型，看是否能从错误中恢复
+        if (
+          error instanceof Error &&
+          error.message.includes("Duplicated chat name")
+        ) {
+          Logger.warn({
+            message: "检测到会话名称重复错误，尝试重新创建...",
+          });
+
+          try {
+            // 在回退之前，使用SessionService标准命名方式创建重试会话
+            const uniqueSessionName = SessionService.createSessionName(
+              undefined,
+              true,
+            );
+
+            const session = await sessionService.createSession(
+              this.activeKnowledgeBaseId,
+              kbName,
+              { name: uniqueSessionName },
+            );
+
+            const response = await sessionService.sendMessage(
+              session.id,
+              question,
+            );
+
+            // 关闭进度窗口
+            progressWindow.close();
+
+            // 使用eventBus发送事件
+            eventBus.emit(Events.UI_SHOW_CHAT_RESULT, {
+              question,
+              answer: response.content,
+              sources: response.sources || [],
+            });
+
+            return; // 成功恢复，不需要继续回退
+          } catch (retryError) {
+            Logger.warn({
+              message: `重试创建会话失败: ${retryError instanceof Error ? retryError.message : String(retryError)}`,
+            });
+            // 继续执行回退逻辑
+          }
+        }
+
+        // 回退方法 - 使用旧的API直接调用
+        const chatAssistantId = await this.getOrCreateAssistant(
+          this.activeKnowledgeBaseId,
+        );
+
+        // 使用带标准会话名称，与SessionService保持一致
+        const sessionId = await this.getOrCreateSession(
+          this.activeKnowledgeBaseId,
+          chatAssistantId,
+          SessionService.createSessionName(),
+        );
+
+        const response = await ragflow.sendMessage(
+          chatAssistantId,
+          sessionId,
+          question,
+        );
+
+        // 关闭进度窗口
+        progressWindow.close();
+
+        // 使用eventBus发送事件
+        eventBus.emit(Events.UI_SHOW_CHAT_RESULT, {
+          question,
+          answer: response.answer,
+          sources: response.sources || [],
+        });
+      }
+    } catch (error) {
+      Logger.error({
+        message: `处理问题失败: ${error instanceof Error ? error.message : String(error)}`,
+        error: error instanceof Error ? error : new Error(String(error)),
+      });
+      this.showErrorNotification("处理问题失败", error);
+    }
+  }
+
+  /**
+   * 获取或创建聊天助手
+   */
+  private async getOrCreateAssistant(datasetId: string): Promise<string> {
+    // 获取助手ID
+    const assistantId = Zotero.Prefs.get(
+      `${config.prefsPrefix}.chatAssistant.${datasetId}`,
+      true,
+    ) as string;
+
+    if (assistantId) {
+      try {
+        // 验证助手是否存在
+        await ragflow.getChatAssistantDetails(assistantId);
+        return assistantId;
+      } catch (error) {
+        Logger.warn({
+          message: `聊天助手 ${assistantId} 不存在，将创建新助手`,
+        });
+      }
+    }
+
+    // 创建新助手
+    const kbName =
+      (Zotero.Prefs.get(`${config.prefsPrefix}.kbName`, true) as string) ||
+      "未命名知识库";
+
+    // 添加时间戳以避免命名冲突
+    const timestamp = Date.now().toString().slice(-6);
+    const assistantName = `${kbName}的AI助手_${timestamp}`;
+
+    // 获取用户设置的默认模型，如果没有则使用qwen-turbo
+    let defaultModel = "qwen-turbo";
+    try {
+      const savedSettingsStr = Zotero.Prefs.get(
+        `${config.prefsPrefix}.defaultAssistantSettings`,
+        true,
+      ) as string;
+
+      if (savedSettingsStr) {
+        const savedSettings = JSON.parse(savedSettingsStr);
+        if (savedSettings.model) {
+          defaultModel = savedSettings.model;
+          Logger.debug({
+            message: `使用用户设置的默认模型: ${defaultModel}`,
+          });
+        }
+      }
+    } catch (error) {
+      Logger.warn({
+        message: `无法加载默认模型设置，使用qwen-turbo作为默认模型: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        error: error instanceof Error ? error : new Error(String(error)),
+      });
+    }
+
+    // 添加日志
+    Logger.info({
+      message: `创建新助手，使用模型: ${defaultModel}`,
+      data: { assistantName },
+    });
+
+    const newAssistantId = await ragflow.createChatAssistant(
+      datasetId,
+      assistantName,
+      {
+        model: defaultModel, // <-- 使用从用户设置中读取的模型
+        temperature: 0.1,
+        top_p: 0.3,
+        max_tokens: 512,
+        similarity_threshold: 0.2,
+        top_n: 8,
+      },
+    );
+
+    // 保存助手ID
+    Zotero.Prefs.set(
+      `${config.prefsPrefix}.chatAssistant.${datasetId}`,
+      newAssistantId,
+      true,
+    );
+
+    return newAssistantId;
+  }
+
+  /**
+   * 获取或创建会话
+   * @param datasetId 知识库ID
+   * @param chatAssistantId 聊天助手ID
+   * @param customSessionName 可选的自定义会话名称，用于避免重名问题
+   */
+  private async getOrCreateSession(
+    datasetId: string,
+    chatAssistantId: string,
+    customSessionName?: string,
+  ): Promise<string> {
+    // 获取会话ID
+    const sessionId = Zotero.Prefs.get(
+      `${config.prefsPrefix}.activeSession.${chatAssistantId}`,
+      true,
+    ) as string;
+
+    if (sessionId) {
+      try {
+        // 验证会话是否存在 - 这里需要根据实际情况添加验证逻辑
+        return sessionId;
+      } catch (error) {
+        Logger.warn({
+          message: `会话 ${sessionId} 不存在，将创建新会话`,
+        });
+      }
+    }
+
+    // 使用自定义名称或使用标准命名格式
+    const sessionName = customSessionName || SessionService.createSessionName();
+
+    Logger.debug({
+      message: `正在创建新会话: ${sessionName}`,
+      data: { chatAssistantId },
+    });
+
+    const newSessionId = await ragflow.createSession(
+      chatAssistantId,
+      sessionName,
+    );
+
+    // 保存会话ID
+    Zotero.Prefs.set(
+      `${config.prefsPrefix}.activeSession.${chatAssistantId}`,
+      newSessionId,
+      true,
+    );
+
+    return newSessionId;
+  }
+
+  /**
+   * 切换UI显示/隐藏
+   */
+  public toggleUI() {
+    try {
+      Logger.info({
+        message: "切换UI显示状态",
+      });
+
+      // 获取UIManager实例
+      const uiManager = UIManager.getInstance();
+
+      // 切换显示/隐藏
+      uiManager.toggle();
+
+      Logger.debug({
+        message: "UI显示状态已切换",
+      });
+    } catch (error) {
+      Logger.error({
+        message: `切换UI显示状态失败: ${error instanceof Error ? error.message : String(error)}`,
+        error: error instanceof Error ? error : new Error(String(error)),
+      });
+      this.showErrorNotification("切换UI显示状态失败", error);
+    }
+  }
+
+  /**
+   * 打开历史记录对话框
+   */
+  public openHistoryDialog() {
+    try {
+      Logger.info({
+        message: "打开历史记录对话框",
+      });
+
+      // 使用eventBus发送事件
+      eventBus.emit(Events.UI_SHOW_HISTORY, undefined);
+    } catch (error) {
+      Logger.error({
+        message: `打开历史记录对话框失败: ${error instanceof Error ? error.message : String(error)}`,
+        error: error instanceof Error ? error : new Error(String(error)),
+      });
+      this.showErrorNotification("打开历史记录对话框失败", error);
+    }
+  }
+
+  /**
+   * 显示助手设置对话框
+   * @param knowledgeBaseId 可选的知识库ID，如果未提供则使用当前活动的知识库
+   * @param assistantId 可选的助手ID，如果提供则加载现有助手设置
+   */
+  public async showAssistantSettings(
+    knowledgeBaseId?: string,
+    assistantId?: string,
+  ): Promise<void> {
+    try {
+      Logger.info({
+        message: "打开助手设置对话框",
+      });
+
+      // 如果没有提供知识库ID，使用当前活动的知识库
+      if (!knowledgeBaseId) {
+        knowledgeBaseId = this.activeKnowledgeBaseId;
+      }
+
+      // 获取UIManager实例并调用其showAssistantSettings方法
+      const uiManager = UIManager.getInstance();
+      await uiManager.showAssistantSettings(knowledgeBaseId, assistantId);
+    } catch (error) {
+      Logger.error({
+        message: `显示助手设置对话框失败: ${error instanceof Error ? error.message : String(error)}`,
+        error: error instanceof Error ? error : new Error(String(error)),
+      });
+      this.showErrorNotification("无法打开助手设置对话框", error);
     }
   }
 }

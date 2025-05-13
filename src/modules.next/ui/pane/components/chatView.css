@@ -1,0 +1,209 @@
+.ragflow-chat-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background-color: var(--ragflow-background-color);
+}
+
+.ragflow-chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--ragflow-spacing-md);
+  border-bottom: 1px solid var(--ragflow-border-color);
+}
+
+.ragflow-chat-title {
+  font-size: var(--ragflow-font-size-lg);
+  font-weight: 600;
+  color: var(--ragflow-text-color);
+}
+
+.ragflow-chat-close {
+  padding: var(--ragflow-spacing-xs) var(--ragflow-spacing-sm);
+  border: none;
+  background: none;
+  color: var(--ragflow-text-secondary-color);
+  cursor: pointer;
+  transition: color var(--ragflow-transition-fast);
+}
+
+.ragflow-chat-close:hover {
+  color: var(--ragflow-error-color);
+}
+
+/* Knowledge base and assistant info */
+.ragflow-chat-info {
+  display: flex;
+  flex-direction: column;
+  padding: var(--ragflow-spacing-md);
+  background-color: var(--ragflow-background-highlight-color);
+  border-bottom: 1px solid var(--ragflow-border-color);
+}
+
+.ragflow-chat-kb-name {
+  font-weight: 500;
+  color: var(--ragflow-text-color);
+  margin-bottom: var(--ragflow-spacing-xs);
+}
+
+.ragflow-chat-assistant-info {
+  display: flex;
+  align-items: center;
+  gap: var(--ragflow-spacing-md);
+  color: var(--ragflow-text-secondary-color);
+  font-size: var(--ragflow-font-size-sm);
+}
+
+.ragflow-chat-assistant-name {
+  font-weight: 500;
+}
+
+.ragflow-chat-assistant-model {
+  background-color: var(--ragflow-background-alt-color);
+  padding: var(--ragflow-spacing-xs) var(--ragflow-spacing-sm);
+  border-radius: 12px;
+  font-size: var(--ragflow-font-size-xs);
+}
+
+.ragflow-chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--ragflow-spacing-md);
+  display: flex;
+  flex-direction: column;
+  gap: var(--ragflow-spacing-md);
+}
+
+.ragflow-message {
+  display: flex;
+  flex-direction: column;
+  max-width: 85%;
+}
+
+.ragflow-message-user {
+  align-self: flex-end;
+}
+
+.ragflow-message-assistant {
+  align-self: flex-start;
+}
+
+.ragflow-message-content {
+  padding: var(--ragflow-spacing-md);
+  border-radius: 12px;
+  background-color: var(--ragflow-background-alt-color);
+  color: var(--ragflow-text-color);
+}
+
+.ragflow-message-user .ragflow-message-content {
+  background-color: var(--ragflow-primary-color);
+  color: white;
+}
+
+.ragflow-message-error .ragflow-message-content {
+  background-color: var(--ragflow-error-color);
+  color: white;
+}
+
+.ragflow-message-assistant .ragflow-message-content {
+  background-color: var(--ragflow-background-alt-color);
+  color: var(--ragflow-text-color);
+}
+
+.ragflow-message-sources {
+  margin-top: var(--ragflow-spacing-sm);
+  font-size: var(--ragflow-font-size-sm);
+  color: var(--ragflow-text-secondary-color);
+}
+
+.ragflow-message-source {
+  padding: var(--ragflow-spacing-sm);
+  margin-top: var(--ragflow-spacing-xs);
+  border-radius: 4px;
+  background-color: var(--ragflow-background-color);
+  border: 1px solid var(--ragflow-border-color);
+}
+
+.ragflow-message-source-title {
+  font-weight: 500;
+  margin-bottom: var(--ragflow-spacing-xs);
+  color: var(--ragflow-text-color);
+}
+
+.ragflow-message-source-content {
+  color: var(--ragflow-text-secondary-color);
+}
+
+.ragflow-chat-input-container {
+  padding: var(--ragflow-spacing-md);
+  border-top: 1px solid var(--ragflow-border-color);
+  background-color: var(--ragflow-background-color);
+}
+
+.ragflow-chat-input-wrapper {
+  position: relative;
+  display: flex;
+  gap: var(--ragflow-spacing-sm);
+}
+
+.ragflow-chat-input {
+  flex: 1;
+  min-height: 44px;
+  max-height: 120px;
+  padding: var(--ragflow-spacing-sm) var(--ragflow-spacing-md);
+  border: 1px solid var(--ragflow-border-color);
+  border-radius: 22px;
+  background-color: var(--ragflow-background-color);
+  color: var(--ragflow-text-color);
+  font-size: var(--ragflow-font-size-base);
+  line-height: 1.5;
+  resize: none;
+  transition: border-color var(--ragflow-transition-fast);
+}
+
+.ragflow-chat-input:focus {
+  outline: none;
+  border-color: var(--ragflow-primary-color);
+}
+
+.ragflow-chat-send {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: none;
+  border-radius: 22px;
+  background-color: var(--ragflow-primary-color);
+  color: white;
+  cursor: pointer;
+  transition: background-color var(--ragflow-transition-fast);
+}
+
+.ragflow-chat-send:hover {
+  background-color: var(--ragflow-secondary-color);
+}
+
+.ragflow-chat-send:disabled {
+  background-color: var(--ragflow-border-color);
+  cursor: not-allowed;
+}
+
+/* Loading state */
+.ragflow-chat-view.loading .ragflow-chat-input {
+  pointer-events: none;
+  opacity: 0.7;
+}
+
+/* Error state */
+.ragflow-chat-view.error .ragflow-chat-input {
+  border-color: var(--ragflow-error-color);
+}
+
+.ragflow-chat-error {
+  padding: var(--ragflow-spacing-md);
+  color: var(--ragflow-error-color);
+  text-align: center;
+  background-color: var(--ragflow-background-alt-color);
+}
