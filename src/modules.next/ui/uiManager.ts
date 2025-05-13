@@ -1,5 +1,5 @@
 import { Logger } from "../services/logger";
-import { eventBus, Events } from "./pane/eventBus";
+import { eventBus, Events } from "./eventBus";
 import { UIManagerConfig } from "./types";
 import { config } from "../../../package.json";
 import { ragflow } from "../services";

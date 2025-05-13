@@ -1,30 +1,38 @@
-import { Logger } from "../../services/logger";
-import { KnowledgeBaseStatus, KnowledgeBaseTask } from "../../services/core/knowledge/types";
-import { Assistant } from "../../services/core/session/types";
-import { SyncStatus } from "../../services/core/knowledge/sync";
-import { TaskProgress } from "../../services/core/knowledge/queue";
+import { Logger } from "../services/logger";
+import {
+  KnowledgeBaseStatus,
+  KnowledgeBaseTask,
+} from "../services/core/knowledge/types";
+import { Assistant } from "../services/core/session/types";
+import { SyncStatus } from "../services/core/knowledge/sync";
+import { TaskProgress } from "../services/core/knowledge/queue";
 
 export type EventMap = {
   // UI Related Events
   "tab:changed": { index: number };
   "pane:visibility_changed": boolean;
-  
+
   // UI Interaction Events
   "ui:open_settings": undefined;
   "ui:show_kb_selector": { id?: string };
   "ui:show_question": { id?: string };
   "ui:show_chat_result": { question: string; answer: string; sources?: any[] };
   "ui:show_history": undefined;
-  
+
   // Session Events
   "session:selected": { id: string };
-  "session:created": { id: string; name: string; knowledgeBaseId: string; assistantId: string };
+  "session:created": {
+    id: string;
+    name: string;
+    knowledgeBaseId: string;
+    assistantId: string;
+  };
   "session:updated": { id: string };
   "session:deleted": { id: string };
-  
+
   // Message Events
   "message:send": string;
-  
+
   // Knowledge Base Events
   "kb:selected": { id: string; name: string };
   "kb:status_changed": { id: string; status: KnowledgeBaseStatus };
@@ -48,25 +56,25 @@ export type EventMap = {
 export const Events = {
   TAB_CHANGED: "tab:changed" as const,
   PANE_VISIBILITY_CHANGED: "pane:visibility_changed" as const,
-  
+
   // UI Interaction Events
   UI_OPEN_SETTINGS: "ui:open_settings" as const,
   UI_SHOW_KB_SELECTOR: "ui:show_kb_selector" as const,
   UI_SHOW_QUESTION: "ui:show_question" as const,
   UI_SHOW_CHAT_RESULT: "ui:show_chat_result" as const,
   UI_SHOW_HISTORY: "ui:show_history" as const,
-  
+
   SESSION_SELECTED: "session:selected" as const,
   SESSION_CREATED: "session:created" as const,
   SESSION_UPDATED: "session:updated" as const,
   SESSION_DELETED: "session:deleted" as const,
-  
+
   SEND_MESSAGE: "message:send" as const,
-  
+
   KB_SELECTED: "kb:selected" as const,
   KB_STATUS_CHANGED: "kb:status_changed" as const,
   KB_TASK_UPDATED: "kb:task_updated" as const,
-  
+
   KB_SYNC_STARTED: "kb:sync_started" as const,
   KB_SYNC_PROGRESS: "kb:sync_progress" as const,
   KB_SYNC_COMPLETED: "kb:sync_completed" as const,
@@ -76,7 +84,7 @@ export const Events = {
 
   ASSISTANT_CREATED: "assistant:created" as const,
   ASSISTANT_UPDATED: "assistant:updated" as const,
-  ASSISTANT_SELECTED: "assistant:selected" as const
+  ASSISTANT_SELECTED: "assistant:selected" as const,
 } as const;
 
 export type EventType = keyof EventMap;
@@ -92,18 +100,18 @@ export class EventBus {
         this.handlers.set(event, new Set());
       }
       this.handlers.get(event)?.add(handler);
-      
+
       Logger.debug({
         message: "Event handler registered",
         context: "EventBus",
-        data: { event }
+        data: { event },
       });
     } catch (error) {
       Logger.error({
         message: "Failed to register event handler",
         context: "EventBus",
         data: { event },
-        error: error as Error
+        error: error as Error,
       });
     }
   }
@@ -121,14 +129,14 @@ export class EventBus {
       Logger.debug({
         message: "Event handler removed",
         context: "EventBus",
-        data: { event }
+        data: { event },
       });
     } catch (error) {
       Logger.error({
         message: "Failed to remove event handler",
         context: "EventBus",
         data: { event },
-        error: error as Error
+        error: error as Error,
       });
     }
   }
@@ -137,7 +145,7 @@ export class EventBus {
     try {
       const handlers = this.handlers.get(event);
       if (handlers) {
-        handlers.forEach(handler => {
+        handlers.forEach((handler) => {
           try {
             handler(data);
           } catch (error) {
@@ -145,7 +153,7 @@ export class EventBus {
               message: "Event handler execution failed",
               context: "EventBus",
               data: { event },
-              error: error as Error
+              error: error as Error,
             });
           }
         });
@@ -154,14 +162,14 @@ export class EventBus {
       Logger.debug({
         message: "Event emitted",
         context: "EventBus",
-        data: { event, handlers: handlers?.size ?? 0 }
+        data: { event, handlers: handlers?.size ?? 0 },
       });
     } catch (error) {
       Logger.error({
         message: "Failed to emit event",
         context: "EventBus",
         data: { event },
-        error: error as Error
+        error: error as Error,
       });
     }
   }
@@ -170,7 +178,7 @@ export class EventBus {
     this.handlers.clear();
     Logger.info({
       message: "Event bus cleared",
-      context: "EventBus"
+      context: "EventBus",
     });
   }
 }

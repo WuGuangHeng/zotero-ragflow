@@ -1,6 +1,12 @@
 import { UIManager } from "./uiManager";
-import { eventBus, Events, type EventMap, type EventType, type EventData } from "./pane/eventBus";
-import { 
+import {
+  eventBus,
+  Events,
+  type EventMap,
+  type EventType,
+  type EventData,
+} from "./eventBus";
+import {
   type UIConfig,
   type UIManagerConfig,
   type SessionListProps,
@@ -8,18 +14,18 @@ import {
   type KnowledgeBaseStatusProps,
   type SessionListState,
   type ChatViewState,
-  type KnowledgeBaseStatusState 
+  type KnowledgeBaseStatusState,
 } from "./types";
 
 // Export UI components and types
 export {
   // Components
   UIManager,
-  
+
   // Event system
   eventBus,
   Events,
-  
+
   // Types
   UIConfig,
   UIManagerConfig,
@@ -31,7 +37,7 @@ export {
   KnowledgeBaseStatusState,
   EventMap,
   EventType,
-  EventData
+  EventData,
 };
 
 // Create and export UI manager instance
@@ -43,5 +49,5 @@ export const uiManager = UIManager.getInstance({
   resizable: true,
   draggable: true,
   position: "right",
-  theme: "system"
+  theme: "system",
 });
