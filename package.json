@@ -1,7 +1,7 @@
 {
   "name": "zotero-ragflow",
   "type": "module",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "连接 Zotero 和 RAGFlow，用于构建知识库并进行知识问答",
   "config": {
     "addonName": "Zotero RAGFlow",
