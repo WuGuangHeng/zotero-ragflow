@@ -30,31 +30,17 @@
     "update-deps": "npm update --save"
   },
   "dependencies": {
-    "zotero-plugin-toolkit": "^4.1.1"
+    "zotero-plugin-toolkit": "^5.0.0-1"
   },
   "devDependencies": {
-    "@eslint/js": "^9.21.0",
-    "@eslint/eslintrc": "^3.0.1",
-    "@typescript-eslint/eslint-plugin": "^7.0.1",
-    "@typescript-eslint/parser": "^7.0.1",
-    "@types/node": "^22.13.5",
-    "eslint": "^9.21.0",
+    "@eslint/js": "^9.26.0",
+    "@types/node": "^22.15.17",
+    "eslint": "^9.26.0",
     "prettier": "^3.5.3",
-    "typescript": "^5.7.3",
-    "typescript-eslint": "^8.25.0",
-    "typescript-plugin-css-modules": "^5.0.1",
-    "postcss": "^8.4.31",
-    "postcss-modules": "^6.0.0",
-    "postcss-loader": "^7.3.3",
-    "postcss-preset-env": "^9.4.0",
-    "postcss-color-mod-function": "^3.0.3",
-    "postcss-custom-properties": "^13.3.6",
-    "postcss-nesting": "^12.0.4",
-    "autoprefixer": "^10.4.19",
-    "style-loader": "^3.3.3",
-    "css-loader": "^6.8.1",
-    "zotero-plugin-scaffold": "^0.2.4",
-    "zotero-types": "^3.1.7"
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.32.1",
+    "zotero-plugin-scaffold": "^0.6.0",
+    "zotero-types": "^4.0.0-beta.10"
   },
   "prettier": {
     "printWidth": 80,
